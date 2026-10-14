@@ -26,7 +26,16 @@ app.get("/", (req, res) => res.send("LMS API is running"));
 
 // central error handler
 app.use((err, req, res, next) => {
-  console.error(err.stack);
+  if (err.name === "MulterError") {
+    if (err.code === "LIMIT_FILE_SIZE") {
+      return res.status(400).json({ message: "File size exceeds 10MB limit" });
+    }
+    return res.status(400).json({ message: err.message });
+  }
+  if (err.message && err.message.includes("File type")) {
+    return res.status(400).json({ message: err.message });
+  }
+  console.error("Server Error:", err.message);
   res.status(500).json({ message: "Something went wrong on the server" });
 });
 

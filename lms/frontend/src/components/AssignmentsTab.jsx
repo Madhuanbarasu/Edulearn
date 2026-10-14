@@ -3,29 +3,54 @@ import api from "../api/axios";
 
 export default function AssignmentsTab({ courseId, user }) {
   const [assignments, setAssignments] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  // Create form state
+  const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState({ title: "", description: "", dueDate: "", maxMarks: 100 });
+  const [attachment, setAttachment] = useState(null);
+  const [creating, setCreating] = useState(false);
+
+  // Submissions state
   const [expanded, setExpanded] = useState(null);
   const [submissions, setSubmissions] = useState({});
   const [mySubs, setMySubs] = useState({});
+  const [loadingSubs, setLoadingSubs] = useState(false);
 
-  const load = () => api.get(`/assignments/course/${courseId}`).then((res) => setAssignments(res.data));
+  const isFaculty = user?.role === "faculty" || user?.role === "admin";
 
-  useEffect(() => { load(); }, [courseId]);
-
-  const handleCreate = async (e) => {
-    e.preventDefault();
-    await api.post("/assignments", { ...form, course: courseId });
-    setForm({ title: "", description: "", dueDate: "", maxMarks: 100 });
-    load();
+  const loadAssignments = async () => {
+    setLoading(true);
+    try {
+      const res = await api.get(`/assignments/course/${courseId}`);
+      setAssignments(res.data);
+    } catch (err) {
+      setError("Failed to load assignments.");
+    } finally {
+      setLoading(false);
+    }
   };
 
+  useEffect(() => {
+    loadAssignments();
+  }, [courseId]);
+
   const loadSubmissions = async (assignmentId) => {
-    if (user.role === "faculty") {
-      const res = await api.get(`/assignments/${assignmentId}/submissions`);
-      setSubmissions((s) => ({ ...s, [assignmentId]: res.data }));
-    } else {
-      const res = await api.get(`/assignments/${assignmentId}/my-submission`);
-      setMySubs((s) => ({ ...s, [assignmentId]: res.data }));
+    setLoadingSubs(true);
+    try {
+      if (isFaculty) {
+        const res = await api.get(`/assignments/${assignmentId}/submissions`);
+        setSubmissions((s) => ({ ...s, [assignmentId]: res.data }));
+      } else {
+        const res = await api.get(`/assignments/${assignmentId}/my-submission`);
+        setMySubs((s) => ({ ...s, [assignmentId]: res.data }));
+      }
+    } catch (err) {
+      setError("Failed to load submissions.");
+    } finally {
+      setLoadingSubs(false);
     }
   };
 
@@ -35,127 +60,590 @@ export default function AssignmentsTab({ courseId, user }) {
     if (next) loadSubmissions(a._id);
   };
 
-  const handleSubmit = async (assignmentId, file, textAnswer) => {
+  const handleCreate = async (e) => {
+    e.preventDefault();
+    if (!form.title.trim() || !form.dueDate) {
+      setError("Please provide title and due date.");
+      return;
+    }
+    setError("");
+    setSuccess("");
+    setCreating(true);
+
+    const fd = new FormData();
+    fd.append("course", courseId);
+    fd.append("title", form.title.trim());
+    fd.append("description", form.description.trim());
+    fd.append("dueDate", form.dueDate);
+    fd.append("maxMarks", form.maxMarks || 100);
+    if (attachment) fd.append("file", attachment);
+
+    try {
+      await api.post("/assignments", fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      setForm({ title: "", description: "", dueDate: "", maxMarks: 100 });
+      setAttachment(null);
+      setShowCreate(false);
+      setSuccess("Assignment published successfully!");
+      loadAssignments();
+    } catch (err) {
+      setError(err.response?.data?.message || "Failed to create assignment.");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const handleDeleteAssignment = async (assignmentId, title) => {
+    if (!window.confirm(`Delete assignment "${title}" and all its submissions?`)) return;
+    setError("");
+    setSuccess("");
+    try {
+      await api.delete(`/assignments/${assignmentId}`);
+      setSuccess("Assignment deleted.");
+      loadAssignments();
+    } catch (err) {
+      setError(err.response?.data?.message || "Failed to delete assignment.");
+    }
+  };
+
+  const handleSubmitAssignment = async (assignmentId, file, textAnswer) => {
+    setError("");
+    setSuccess("");
     const fd = new FormData();
     if (file) fd.append("file", file);
     if (textAnswer) fd.append("textAnswer", textAnswer);
-    await api.post(`/assignments/${assignmentId}/submit`, fd, {
-      headers: { "Content-Type": "multipart/form-data" },
-    });
-    loadSubmissions(assignmentId);
+
+    try {
+      await api.post(`/assignments/${assignmentId}/submit`, fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      setSuccess("Assignment submitted successfully!");
+      loadSubmissions(assignmentId);
+    } catch (err) {
+      setError(err.response?.data?.message || "Failed to submit assignment.");
+    }
   };
 
   const handleGrade = async (submissionId, marksObtained, feedback, assignmentId) => {
-    await api.put(`/assignments/submissions/${submissionId}/grade`, { marksObtained, feedback });
-    loadSubmissions(assignmentId);
+    setError("");
+    setSuccess("");
+    try {
+      await api.put(`/assignments/submissions/${submissionId}/grade`, { marksObtained, feedback });
+      setSuccess("Grade saved successfully!");
+      loadSubmissions(assignmentId);
+    } catch (err) {
+      setError(err.response?.data?.message || "Failed to save grade.");
+    }
+  };
+
+  const getFileUrl = (url) => {
+    if (!url) return "#";
+    if (url.startsWith("http://") || url.startsWith("https://")) return url;
+    const base = (import.meta.env.VITE_API_URL || "http://localhost:5000/api").replace("/api", "");
+    return `${base}${url}`;
   };
 
   return (
-    <div>
-      {user.role === "faculty" && (
-        <form onSubmit={handleCreate} className="bg-white p-4 rounded-lg shadow mb-6 space-y-3">
-          <h3 className="font-semibold">New Assignment</h3>
-          <input placeholder="Title" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} required className="w-full border rounded px-3 py-2" />
-          <textarea placeholder="Description" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="w-full border rounded px-3 py-2" />
-          <div className="flex gap-3">
-            <input type="datetime-local" value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} required className="border rounded px-3 py-2 flex-1" />
-            <input type="number" placeholder="Max marks" value={form.maxMarks} onChange={(e) => setForm({ ...form, maxMarks: e.target.value })} className="border rounded px-3 py-2 w-32" />
-          </div>
-          <button className="bg-indigo-700 text-white px-4 py-2 rounded hover:bg-indigo-800">Create</button>
-        </form>
+    <div className="space-y-6">
+      {/* Top Controls */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h2 className="text-xl font-bold text-slate-900">Assignments</h2>
+          <p className="text-xs text-slate-500 mt-0.5">
+            {isFaculty
+              ? "Create project prompts, track submissions, and evaluate student work."
+              : "Review deadlines, upload your solutions, and view faculty marks."}
+          </p>
+        </div>
+
+        {isFaculty && (
+          <button
+            onClick={() => setShowCreate(!showCreate)}
+            className="px-5 py-2.5 rounded-xl text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm transition"
+          >
+            {showCreate ? "Cancel" : "+ New Assignment"}
+          </button>
+        )}
+      </div>
+
+      {/* Notifications */}
+      {error && (
+        <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs sm:text-sm flex items-center justify-between">
+          <span>{error}</span>
+          <button onClick={() => setError("")} className="text-rose-500 font-bold">&times;</button>
+        </div>
+      )}
+      {success && (
+        <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs sm:text-sm flex items-center justify-between">
+          <span>{success}</span>
+          <button onClick={() => setSuccess("")} className="text-emerald-500 font-bold">&times;</button>
+        </div>
       )}
 
-      <div className="space-y-3">
-        {assignments.map((a) => (
-          <div key={a._id} className="bg-white rounded-lg shadow p-4">
-            <div className="flex justify-between items-center cursor-pointer" onClick={() => toggleExpand(a)}>
-              <div>
-                <h4 className="font-semibold">{a.title}</h4>
-                <p className="text-xs text-gray-500">Due: {new Date(a.dueDate).toLocaleString()} • Max marks: {a.maxMarks}</p>
-              </div>
-              <span className="text-indigo-700 text-sm">{expanded === a._id ? "Hide" : "View"}</span>
+      {/* Create Assignment Form */}
+      {showCreate && isFaculty && (
+        <div className="bg-white p-6 rounded-2xl border border-indigo-100 shadow-sm animate-in fade-in duration-150">
+          <h3 className="text-base font-bold text-slate-900 mb-4">Create New Assignment</h3>
+          <form onSubmit={handleCreate} className="space-y-4">
+            <div>
+              <label className="block text-xs font-semibold uppercase text-slate-700 mb-1">
+                Assignment Title *
+              </label>
+              <input
+                placeholder="e.g. Problem Set 1: Graph Theory"
+                value={form.title}
+                onChange={(e) => setForm({ ...form, title: e.target.value })}
+                required
+                className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
             </div>
 
-            {expanded === a._id && (
-              <div className="mt-4 border-t pt-4">
-                <p className="text-sm text-gray-600 mb-3">{a.description}</p>
+            <div>
+              <label className="block text-xs font-semibold uppercase text-slate-700 mb-1">
+                Description / Instructions
+              </label>
+              <textarea
+                rows="3"
+                placeholder="Provide detailed instructions, formatting guidelines, or problem prompts..."
+                value={form.description}
+                onChange={(e) => setForm({ ...form, description: e.target.value })}
+                className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
 
-                {user.role === "student" && (
-                  <StudentSubmissionForm
-                    assignment={a}
-                    mySubmission={mySubs[a._id]}
-                    onSubmit={(file, text) => handleSubmit(a._id, file, text)}
-                  />
-                )}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-xs font-semibold uppercase text-slate-700 mb-1">
+                  Due Date &amp; Time *
+                </label>
+                <input
+                  type="datetime-local"
+                  value={form.dueDate}
+                  onChange={(e) => setForm({ ...form, dueDate: e.target.value })}
+                  required
+                  className="w-full px-4 py-2 rounded-xl border border-slate-300 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
 
-                {user.role === "faculty" && (
-                  <FacultySubmissionsList
-                    submissions={submissions[a._id] || []}
-                    onGrade={(subId, marks, fb) => handleGrade(subId, marks, fb, a._id)}
-                  />
+              <div>
+                <label className="block text-xs font-semibold uppercase text-slate-700 mb-1">
+                  Maximum Marks
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  value={form.maxMarks}
+                  onChange={(e) => setForm({ ...form, maxMarks: e.target.value })}
+                  className="w-full px-4 py-2 rounded-xl border border-slate-300 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase text-slate-700 mb-1">
+                  Reference File (Optional)
+                </label>
+                <input
+                  type="file"
+                  onChange={(e) => setAttachment(e.target.files[0])}
+                  className="w-full text-xs text-slate-500 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-100 file:text-slate-700"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowCreate(false)}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={creating}
+                className="px-6 py-2.5 rounded-xl text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 shadow-sm"
+              >
+                {creating ? "Publishing..." : "Publish Assignment"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Assignments List */}
+      {loading ? (
+        <div className="py-12 text-center">
+          <div className="w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
+          <p className="text-xs text-slate-500">Loading assignments...</p>
+        </div>
+      ) : assignments.length > 0 ? (
+        <div className="space-y-4">
+          {assignments.map((a) => {
+            const isExpanded = expanded === a._id;
+            const isOverdue = new Date() > new Date(a.dueDate);
+            const mySub = mySubs[a._id];
+
+            return (
+              <div
+                key={a._id}
+                className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden"
+              >
+                <div className="p-6">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                        <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-slate-100 text-slate-700">
+                          Max: {a.maxMarks} pts
+                        </span>
+                        <span
+                          className={`text-xs font-semibold px-2 py-0.5 rounded-md ${
+                            isOverdue
+                              ? "bg-rose-50 text-rose-700"
+                              : "bg-indigo-50 text-indigo-700"
+                          }`}
+                        >
+                          Due: {new Date(a.dueDate).toLocaleString()}
+                        </span>
+
+                        {!isFaculty && mySub && (
+                          <span
+                            className={`text-xs font-semibold px-2 py-0.5 rounded-md capitalize ${
+                              mySub.status === "graded"
+                                ? "bg-emerald-50 text-emerald-700"
+                                : mySub.status === "late"
+                                ? "bg-amber-50 text-amber-700"
+                                : "bg-blue-50 text-blue-700"
+                            }`}
+                          >
+                            {mySub.status}
+                          </span>
+                        )}
+                      </div>
+                      <h3 className="text-lg font-bold text-slate-900">{a.title}</h3>
+                      {a.description && (
+                        <p className="text-xs sm:text-sm text-slate-600 mt-1 leading-relaxed">
+                          {a.description}
+                        </p>
+                      )}
+                      {a.attachmentUrl && (
+                        <a
+                          href={getFileUrl(a.attachmentUrl)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="mt-2 inline-flex items-center gap-1.5 text-xs text-indigo-600 hover:text-indigo-700 font-semibold"
+                        >
+                          <span>📎 Download Attachment</span>
+                        </a>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <button
+                        onClick={() => toggleExpand(a)}
+                        className={`px-4 py-2 rounded-xl text-xs font-semibold transition ${
+                          isExpanded
+                            ? "bg-slate-100 text-slate-700"
+                            : "bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm"
+                        }`}
+                      >
+                        {isExpanded
+                          ? "Hide Details"
+                          : isFaculty
+                          ? "Submissions & Grading"
+                          : "Submit / View Grade"}
+                      </button>
+
+                      {isFaculty && (
+                        <button
+                          onClick={() => handleDeleteAssignment(a._id, a.title)}
+                          className="p-2 text-rose-600 hover:bg-rose-50 rounded-xl text-xs"
+                          title="Delete assignment"
+                        >
+                          🗑️
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Expanded Submissions or Student Upload Panel */}
+                {isExpanded && (
+                  <div className="bg-slate-50 border-t border-slate-200 p-6">
+                    {loadingSubs ? (
+                      <p className="text-xs text-slate-500 text-center py-4">Loading submission data...</p>
+                    ) : user.role === "student" ? (
+                      <StudentSubmissionForm
+                        assignment={a}
+                        mySubmission={mySubs[a._id]}
+                        onSubmit={(file, text) => handleSubmitAssignment(a._id, file, text)}
+                        getFileUrl={getFileUrl}
+                      />
+                    ) : (
+                      <FacultySubmissionsList
+                        assignment={a}
+                        submissions={submissions[a._id] || []}
+                        onGrade={(subId, marks, fb) => handleGrade(subId, marks, fb, a._id)}
+                        getFileUrl={getFileUrl}
+                      />
+                    )}
+                  </div>
                 )}
               </div>
-            )}
-          </div>
-        ))}
-        {assignments.length === 0 && <p className="text-gray-500 text-sm">No assignments yet.</p>}
-      </div>
-    </div>
-  );
-}
-
-function StudentSubmissionForm({ mySubmission, onSubmit }) {
-  const [file, setFile] = useState(null);
-  const [text, setText] = useState("");
-
-  return (
-    <div>
-      {mySubmission ? (
-        <div className="bg-green-50 border border-green-200 rounded p-3 text-sm">
-          <p>Status: <strong>{mySubmission.status}</strong></p>
-          {mySubmission.marksObtained != null && <p>Marks: {mySubmission.marksObtained}</p>}
-          {mySubmission.feedback && <p>Feedback: {mySubmission.feedback}</p>}
+            );
+          })}
         </div>
       ) : (
-        <p className="text-sm text-gray-500 mb-2">Not submitted yet.</p>
+        <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-12 text-center text-slate-500">
+          <div className="text-3xl mb-2">📝</div>
+          <p className="text-sm font-medium text-slate-600">No assignments posted for this course yet.</p>
+          <p className="text-xs text-slate-400 mt-1">
+            {isFaculty ? "Click '+ New Assignment' above to create one." : "Check back later for upcoming assignments."}
+          </p>
+        </div>
       )}
-      <div className="flex gap-2 mt-3 flex-wrap items-center">
-        <textarea placeholder="Text answer (optional)" value={text} onChange={(e) => setText(e.target.value)} className="border rounded px-3 py-2 flex-1" />
-        <input type="file" onChange={(e) => setFile(e.target.files[0])} className="text-sm" />
-        <button onClick={() => onSubmit(file, text)} className="bg-indigo-700 text-white px-4 py-2 rounded hover:bg-indigo-800 text-sm">
-          {mySubmission ? "Re-submit" : "Submit"}
-        </button>
-      </div>
     </div>
   );
 }
 
-function FacultySubmissionsList({ submissions, onGrade }) {
+function StudentSubmissionForm({ assignment, mySubmission, onSubmit, getFileUrl }) {
+  const [file, setFile] = useState(null);
+  const [text, setText] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!file && !text.trim()) {
+      alert("Please provide a file attachment or a written answer.");
+      return;
+    }
+    setSubmitting(true);
+    await onSubmit(file, text.trim());
+    setSubmitting(false);
+    setText("");
+    setFile(null);
+  };
+
   return (
-    <div className="space-y-2">
-      {submissions.map((s) => (
-        <GradeRow key={s._id} submission={s} onGrade={onGrade} />
-      ))}
-      {submissions.length === 0 && <p className="text-sm text-gray-500">No submissions yet.</p>}
+    <div className="space-y-4">
+      {mySubmission ? (
+        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold uppercase text-slate-500">Your Submission</span>
+            <span
+              className={`text-xs font-semibold px-2.5 py-1 rounded-full capitalize ${
+                mySubmission.status === "graded"
+                  ? "bg-emerald-100 text-emerald-800"
+                  : mySubmission.status === "late"
+                  ? "bg-amber-100 text-amber-800"
+                  : "bg-blue-100 text-blue-800"
+              }`}
+            >
+              Status: {mySubmission.status}
+            </span>
+          </div>
+
+          <div className="text-xs text-slate-500">
+            Submitted at: {new Date(mySubmission.submittedAt).toLocaleString()}
+          </div>
+
+          {mySubmission.textAnswer && (
+            <div className="bg-slate-50 p-3 rounded-lg text-xs text-slate-700">
+              <strong className="block text-slate-900 mb-1">Written Response:</strong>
+              {mySubmission.textAnswer}
+            </div>
+          )}
+
+          {mySubmission.fileUrl && (
+            <div>
+              <a
+                href={getFileUrl(mySubmission.fileUrl)}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-600 hover:text-indigo-700"
+              >
+                <span>📎 Download Your Submitted File</span>
+              </a>
+            </div>
+          )}
+
+          {mySubmission.status === "graded" && (
+            <div className="mt-3 p-3.5 bg-emerald-50 rounded-xl border border-emerald-200">
+              <div className="text-sm font-bold text-emerald-900">
+                Grade: {mySubmission.marksObtained} / {assignment.maxMarks} pts
+              </div>
+              {mySubmission.feedback && (
+                <p className="text-xs text-emerald-800 mt-1">
+                  <strong>Instructor Feedback:</strong> {mySubmission.feedback}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="bg-amber-50 p-3.5 rounded-xl border border-amber-200 text-amber-800 text-xs font-medium">
+          You have not submitted this assignment yet.
+        </div>
+      )}
+
+      {/* Submission Form */}
+      <form onSubmit={handleSubmit} className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3">
+        <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700">
+          {mySubmission ? "Resubmit / Update Your Solution" : "Submit Your Assignment"}
+        </h4>
+        <textarea
+          rows="3"
+          placeholder="Type or paste your text response here (optional if uploading a file)..."
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+        />
+
+        <div>
+          <label className="block text-xs font-semibold text-slate-600 mb-1">
+            Upload Solution Document (Max 10MB)
+          </label>
+          <input
+            type="file"
+            onChange={(e) => setFile(e.target.files[0])}
+            className="w-full text-xs text-slate-500 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-indigo-50 file:text-indigo-700"
+          />
+        </div>
+
+        <button
+          type="submit"
+          disabled={submitting}
+          className="px-5 py-2.5 rounded-xl text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 shadow-sm transition"
+        >
+          {submitting ? "Uploading..." : mySubmission ? "Submit Revision" : "Submit Assignment"}
+        </button>
+      </form>
     </div>
   );
 }
 
-function GradeRow({ submission, onGrade }) {
+function FacultySubmissionsList({ assignment, submissions, onGrade, getFileUrl }) {
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700">
+          Student Submissions ({submissions.length})
+        </h4>
+      </div>
+
+      {submissions.length > 0 ? (
+        <div className="space-y-3">
+          {submissions.map((s) => (
+            <GradeRow
+              key={s._id}
+              assignment={assignment}
+              submission={s}
+              onGrade={onGrade}
+              getFileUrl={getFileUrl}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="bg-white p-6 rounded-xl border border-slate-200 text-center text-slate-400 text-xs">
+          No student submissions received for this assignment yet.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GradeRow({ assignment, submission, onGrade, getFileUrl }) {
   const [marks, setMarks] = useState(submission.marksObtained ?? "");
   const [feedback, setFeedback] = useState(submission.feedback ?? "");
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    if (marks === "") {
+      alert("Please enter marks before saving.");
+      return;
+    }
+    setSaving(true);
+    await onGrade(submission._id, Number(marks), feedback);
+    setSaving(false);
+  };
 
   return (
-    <div className="border rounded p-3 flex justify-between items-center flex-wrap gap-2">
-      <div>
-        <p className="font-medium text-sm">{submission.student?.name} ({submission.student?.rollNumber})</p>
-        <p className="text-xs text-gray-500">Status: {submission.status}</p>
+    <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-3">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+        <div>
+          <span className="font-bold text-sm text-slate-900">
+            {submission.student?.name}
+          </span>
+          <span className="text-xs text-slate-500 ml-2">
+            ({submission.student?.rollNumber || submission.student?.email})
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span
+            className={`text-xs font-semibold px-2 py-0.5 rounded capitalize ${
+              submission.status === "graded"
+                ? "bg-emerald-50 text-emerald-700"
+                : submission.status === "late"
+                ? "bg-amber-50 text-amber-700"
+                : "bg-blue-50 text-blue-700"
+            }`}
+          >
+            {submission.status}
+          </span>
+          <span className="text-xs text-slate-400">
+            {new Date(submission.submittedAt).toLocaleString()}
+          </span>
+        </div>
       </div>
-      <div className="flex gap-2 items-center">
-        <input type="number" placeholder="Marks" value={marks} onChange={(e) => setMarks(e.target.value)} className="border rounded px-2 py-1 w-20 text-sm" />
-        <input placeholder="Feedback" value={feedback} onChange={(e) => setFeedback(e.target.value)} className="border rounded px-2 py-1 text-sm" />
-        <button onClick={() => onGrade(submission._id, Number(marks), feedback)} className="bg-indigo-700 text-white px-3 py-1 rounded text-sm hover:bg-indigo-800">
-          Save
+
+      {/* Answers */}
+      {submission.textAnswer && (
+        <div className="p-2.5 bg-slate-50 rounded-lg text-xs text-slate-700">
+          <strong className="text-slate-900">Student Answer:</strong> {submission.textAnswer}
+        </div>
+      )}
+
+      {submission.fileUrl && (
+        <div>
+          <a
+            href={getFileUrl(submission.fileUrl)}
+            target="_blank"
+            rel="noreferrer"
+            className="text-xs font-semibold text-indigo-600 hover:text-indigo-700 inline-flex items-center gap-1"
+          >
+            <span>📥 View/Download Student File</span>
+          </a>
+        </div>
+      )}
+
+      {/* Grading Inputs */}
+      <div className="pt-2 border-t border-slate-100 flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+        <div className="flex items-center gap-1">
+          <input
+            type="number"
+            min="0"
+            max={assignment.maxMarks}
+            placeholder="Score"
+            value={marks}
+            onChange={(e) => setMarks(e.target.value)}
+            className="w-20 px-3 py-1.5 rounded-lg border border-slate-300 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          />
+          <span className="text-xs text-slate-400">/ {assignment.maxMarks}</span>
+        </div>
+
+        <input
+          placeholder="Instructor feedback..."
+          value={feedback}
+          onChange={(e) => setFeedback(e.target.value)}
+          className="flex-1 px-3 py-1.5 rounded-lg border border-slate-300 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+        />
+
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="px-4 py-1.5 rounded-lg text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 transition"
+        >
+          {saving ? "Saving..." : "Save Grade"}
         </button>
       </div>
     </div>

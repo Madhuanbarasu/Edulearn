@@ -9,11 +9,13 @@ const {
   submitQuizAttempt,
   getQuizResults,
   getMyAttempt,
+  deleteQuiz,
 } = require("../controllers/quizController");
 
 router.use(protect);
 router.post("/", authorize("faculty", "admin"), createQuiz);
 router.get("/course/:courseId", getQuizzesForCourse);
+router.delete("/:id", authorize("faculty", "admin"), deleteQuiz);
 router.get("/:id/full", authorize("faculty", "admin"), getQuizFull);
 router.get("/:id/attempt", getQuizForAttempt);
 router.post("/:id/attempt", authorize("student"), submitQuizAttempt);
